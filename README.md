@@ -2,6 +2,8 @@
 
 If you want to use your yubikey with your own yubico HSM server you need to use this version of mod_authn_yubikey, because the original one does not support do declare your own AuthYkValidationHost and the AuthYkValidationProtocol.
 
+You can specify an api version to use yubico (yubiserve compliant) 2.0 validation protocol.
+Default is to not use any api version.
 
 ###### Setup local config files
 To add the user frank.nord with the password foobar123 and the token id abcdefghijkl you have to do:
@@ -28,6 +30,7 @@ AuthYubiKeyTmpFile yubikey/ykTmpDb
 AuthYubiKeyUserFile yubikey/ykUserDb
 AuthYubiKeyRequireSecure On
 AuthYubiKeyExternalErrorPage Off
+AuthYkApiVersion 2.0
 
 AuthYkValidationProtocol https
 AuthYkValidationHost api.yubico.com

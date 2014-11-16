@@ -222,8 +222,16 @@ yubikey_client_request (yubikey_client_t client,
   //int proxyPort = 8080;
   //char *proxy = "proxy.example.com";
   //char *proxyPwd = "username:password";
-  
-  asprintf (&url, url_template, cfg->validationProtocol, cfg->validationHost, cfg->validationPath, client->client_id, yubikey);
+
+  if (cfg->apiVersion)
+  {
+   url_template = "%s://%s/wsapi/%s/verify?id=%d&otp=%s";
+   asprintf (&url, url_template, cfg->validationProtocol, cfg->validationHost, cfg->apiVersion, client->client_id, yubikey);
+  }
+  else
+  {
+   asprintf (&url, url_template, cfg->validationProtocol, cfg->validationHost, client->client_id, yubikey);
+  }
 
   /* ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                               "Debug: Validation Url %s %d %s %s %s",
