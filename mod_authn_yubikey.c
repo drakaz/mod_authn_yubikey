@@ -69,6 +69,7 @@ module AP_MODULE_DECLARE_DATA authn_yubikey_module;
 #define DEFAULT_EXTERNAL_ERROR_PAGE (FALSE)
 #define DEFAULT_USER_DB "conf/ykUserDb"
 #define DEFAULT_TMP_DB "conf/ykTmpDb"
+#define DEFAULT_SHARE_DB (FALSE)
 #define UNSET -1
 
 /* A helper */
@@ -83,6 +84,18 @@ static apr_datum_t string2datum(const char * toStore, request_rec *r)
 #endif
 
     return dt;
+}
+
+static char * getDbKey(const char * user, yubiauth_dir_cfg *cfg, request_rec *r)
+{
+    if (cfg->shareDb) {
+	    char *sharedUser = malloc(strlen(user)+strlen(r->hostname)+1);
+	    strcpy(sharedUser, user);
+            sharedUser = strcat(sharedUser, ":");
+            sharedUser = strcat(sharedUser, r->hostname);
+	    return sharedUser;
+    }
+    return user;
 }
 
 static void openDb(apr_dbm_t **userDbm, const char *dbFilename, request_rec *r)
@@ -102,10 +115,11 @@ static void closeDb(apr_dbm_t *userDbm, request_rec *r)
 }
 
 /* User Key because the username is the key to the db */
-static void deleteKeyFromDb(apr_dbm_t *userDbm, const char *userKey, request_rec *r)
+static void deleteKeyFromDb(apr_dbm_t *userDbm, const char *userKey, yubiauth_dir_cfg *cfg, request_rec *r)
 {
     apr_datum_t key;
     apr_status_t rv;
+    userKey = getDbKey(userKey, cfg, r);
     key = string2datum(userKey, r);
     ap_log_rerror(APLOG_MARK, APLOG_ERR|APLOG_DEBUG, 0, r,
                   LOG_PREFIX "Deleting key %s",
@@ -121,10 +135,12 @@ static void deleteKeyFromDb(apr_dbm_t *userDbm, const char *userKey, request_rec
 static apr_status_t setUserInDb(apr_dbm_t *userDbm,
                                 const char *user,
                                 const char *password,
+                                yubiauth_dir_cfg *cfg,
                                 request_rec *r)
 {
     char *timeAuthenticated = NULL;
     char *dbToken = NULL; //This is used to store pw:date
+    char *userKey = NULL;
 
     apr_datum_t key, value;
     apr_status_t rv;
@@ -134,7 +150,8 @@ static apr_status_t setUserInDb(apr_dbm_t *userDbm,
     dbToken = apr_pstrcat(r->pool, password, ":", timeAuthenticated, NULL);
 
     /* store OTP:time combo with username as key in DB */
-    key = string2datum(user, r);
+    userKey = getDbKey(user, cfg, r);
+    key = string2datum(userKey, r);
     value = string2datum(dbToken, r);
 
     /* Pump user into db, store un, cookie value, creation date,
@@ -328,6 +345,7 @@ static authn_status authn_check_otp(request_rec *r, const char *user,
 
     char *lookedUpToken = NULL;
     char *lookedUpPassword = NULL; //This is the OTP token
+    char *dbUserKey = (char *) malloc(sizeof(user));
     apr_size_t passwordLength = 0;
     apr_time_t lookedUpDate = 0;
 
@@ -356,7 +374,9 @@ static authn_status authn_check_otp(request_rec *r, const char *user,
 
     openDb(&userDbm, cfg->tmpAuthDbFilename, r);
 
-    key = string2datum(user, r);
+    dbUserKey = strcpy(dbUserKey, user);
+    dbUserKey = getDbKey(dbUserKey, cfg, r);
+    key = string2datum(dbUserKey, r);
     ap_log_rerror(APLOG_MARK, APLOG_ERR|APLOG_DEBUG, 0, r, LOG_PREFIX "Fetching token (pw:time) for user %s from db ...", user);
     rv = apr_dbm_fetch(userDbm, key, &dbUserRecord);
     if (rv != APR_SUCCESS) {
@@ -401,7 +421,10 @@ static authn_status authn_check_otp(request_rec *r, const char *user,
         /* The date expired */
         if (passwordExpired(user, lookedUpDate, cfg->timeoutSeconds, r)) {
             /* Delete user record */
-            deleteKeyFromDb(userDbm, user, r);
+            ap_log_rerror(APLOG_MARK, APLOG_ERR|APLOG_DEBUG, 0, r,
+			LOG_PREFIX "Remove expired entry for user : %s",
+			user);
+            deleteKeyFromDb(userDbm, user, cfg, r);
             closeDb(userDbm, r);
             return AUTH_DENIED;
         }
@@ -418,16 +441,16 @@ static authn_status authn_check_otp(request_rec *r, const char *user,
             if (ret == YUBIKEY_CLIENT_OK) {
                 authenticationSuccessful = 1;
             } else {
-	      ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                               LOG_PREFIX "Authentication failed, reason: %s",
                               yubikey_client_strerror(ret));
                 return AUTH_DENIED;
-	    }
+            }
 
         /* We could successfully authenticate the user */
         if (authenticationSuccessful) {
             /* Try to write the user into the db */
-            if (setUserInDb(userDbm, user, &password[passwordLength], r) 
+            if (setUserInDb(userDbm, user, &password[passwordLength], cfg, r)
 		!= APR_SUCCESS) {
                 /* Abort, we could not write the user into the db after
                  * authenticating him ...
@@ -609,6 +632,10 @@ static const command_rec authn_yubikey_cmds[] = {
                   (void*) APR_OFFSETOF(yubiauth_dir_cfg, requireSecure),
                   ACCESS_CONF|RSRC_CONF,
 		 "Whether or not a secure site is required to pass authentication (Default On)"),
+    AP_INIT_FLAG("AuthYubiKeyShareDb", ap_set_flag_slot,
+                  (void*) APR_OFFSETOF(yubiauth_dir_cfg, shareDb),
+                  ACCESS_CONF|RSRC_CONF,
+		 "Whether or not a AuthYubiKeyTmpFile can be shared over several vhost instead of having one db per vhost (Default Off)"),
     {NULL}
 };
 
@@ -627,6 +654,7 @@ static void *create_yubiauth_dir_cfg(apr_pool_t *pool, char *x)
     dir->validationHost = NULL;
     dir->validationPath = NULL;
     dir->apiVersion = NULL;
+    dir->shareDb = NULL;
 
     return dir;
 }
@@ -650,6 +678,7 @@ static void *merge_yubiauth_dir_cfg(apr_pool_t *pool, void *BASE, void *ADD)
   dir->validationPath = (add->validationPath == NULL) ? base->validationPath : add->validationPath;
 
   dir->apiVersion = (add->apiVersion == NULL) ? base->apiVersion : add->apiVersion;
+  dir->shareDb = (add->shareDb == NULL) ? base->shareDb : add->shareDb;
 
   /* Set defaults configuration here
    */
@@ -676,6 +705,9 @@ static void *merge_yubiauth_dir_cfg(apr_pool_t *pool, void *BASE, void *ADD)
   }
   if (dir->validationPath == NULL) {
    dir->validationPath = "wsapi/verify";
+  }
+  if (dir->shareDb == NULL) {
+   dir->shareDb = DEFAULT_SHARE_DB;
   }
   return dir;
 }

@@ -5,6 +5,8 @@ If you want to use your yubikey with your own yubico HSM server you need to use 
 You can specify an api version to use yubico (yubiserve compliant) 2.0 validation protocol.
 Default is to not use any api version.
 
+You can share the AuthYubiKeyTmpFile between vhost using AuthYkShareDb on. Default is to overwrite previous entry with the same username (in this case, you need one tmpDb for each vhost).
+
 ###### Setup local config files
 To add the user frank.nord with the password foobar123 and the token id abcdefghijkl you have to do:
 
@@ -34,6 +36,8 @@ AuthYkApiVersion 2.0
 
 AuthYkValidationProtocol https
 AuthYkValidationHost api.yubico.com
+
+AuthYkShareDb off
 
 Require valid-user
 </Location>
